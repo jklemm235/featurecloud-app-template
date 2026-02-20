@@ -1,6 +1,6 @@
 # FeatureCloud Template
 
-This repository is a starter template for building a FeatureCloud app that can be run in three ways:
+This repository is a starter template for building a [FeatureCloud app](https://featurecloud.ai/) that can be run in three ways:
 
 - as a regular FeatureCloud app in true federated learning projects after publishing the app
 - as a regular FeatureCloud app using FeatureClouds dockerized testembed, running on just one machine (no publishing needed)
