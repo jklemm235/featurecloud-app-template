@@ -145,7 +145,6 @@ class LocalFedLearningSimulator(ProtocolFedLearning):
                                  use_smpc=False,
                                  use_dp=False,
                                  memo=None):
-        print(f"Client {self.client_id} sending data to coordinator")
         self.gateway.send_to_coordinator(client_id=str(self.client_id), data=data, memo=memo)
 
     def gather_data(self,
@@ -169,7 +168,6 @@ class LocalFedLearningSimulator(ProtocolFedLearning):
                        memo: Optional[Any] = None) -> None:
         if not self.coordinator:
             raise ValueError("Only the coordinator can broadcast data")
-        print(f"Broadcasting data to all clients")
         self.gateway.broadcast_to_clients(data=data, memo=memo)
 
     def await_data(self,
