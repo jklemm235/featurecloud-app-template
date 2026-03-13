@@ -2,7 +2,7 @@
 A class to use to simulate a federated learning environment locally. This class
 adheres to the ProtocolFedLearning protocol of this project. This class represents
 a single client in a federated learning environment.
-- SharedDictionary: A helper class that allows multiple instances to share a single dictionary concurrently.
+- FedLearnSimulationGateway: A helper class that allows multiple instances to concurrently send data around.
 - LocalFedLearningSimulator: The simulator class, representing a single client in a federated learning environment.
 - LocalFedLearningSimulationWrapper: A wrapper class to simulate a federated learning environment locally. Contains
     multiple instances of LocalFedLearningSimulator and prepares the folder for running them.
@@ -16,84 +16,85 @@ from .protocolfedlearningclass import ProtocolFedLearning
 
 WAITING_TIME = 0.1
 
-class SharedDictionary:
+### Helpers
+class FedLearnSimulationGatewayDataPacket:
     """
-    A helper class that allows multiple instances to share a single dictionary concurrently.
+    A helper class containing one data package that is sent around in the FedLearnSimulationGateway.
+    """
+    def __init__(self, direction: str, memo: Optional[str], data: Any):
+        self.direction = direction
+        self.memo = memo
+        self.data = data
+        if self.direction not in ["to_coordinator", "to_clients"]:
+            raise ValueError("Invalid direction, must be 'to_coordinator' or 'to_clients'")
+
+class FedLearnSimulationGateway:
+    """
+    A helper class that allows multiple instances to concurrently send data around.
     """
 
     def __init__(self, num_clients: int):
-        self._shared_dict = {}
+        self._shared_dict: dict[str, List[FedLearnSimulationGatewayDataPacket]] = {}
+            # Key is the client_id, value are the data packets of this client
         self._lock = Lock()
         self.num_clients = num_clients
 
-    def get(self, key):
-        """
-        Gets the value associated with the given key from the shared dictionary.
-        """
+    def send_to_coordinator(self, client_id: str, data: Any, memo: Optional[str] = None):
         with self._lock:
-            return self._shared_dict.get(key)
+            if not client_id in self._shared_dict:
+                self._shared_dict[client_id] = []
+            self._shared_dict[client_id].append(
+                FedLearnSimulationGatewayDataPacket(
+                    direction="to_coordinator",
+                    memo=memo,
+                    data=data))
 
-    def get_all_non_global_values(self):
-        """
-        Gets all key-value pairs from the shared dictionary.
-        """
+    def gather_data_for_coordinator(self, memo: Optional[str] = None) -> List[Any]:
         with self._lock:
-            result = []
-            for key, value in self._shared_dict.items():
-                if key not in ['global', 'times_accesed_global']:
-                    result.append(value)
-            return result
-
-    def delete_all_but_global(self):
-        """
-        Deletes all key-value pairs from the shared dictionary except the one with key 'global'.
-        """
-        with self._lock:
-            if 'global' in self._shared_dict and 'times_accesed_global' in self._shared_dict:
-                self._shared_dict = {'global': self._shared_dict['global'],
-                                     'times_accesed_global': self._shared_dict['times_accesed_global']}
+            data_packets = []
+            for _, packets in self._shared_dict.items():
+                for packet in packets:
+                    if packet.direction == "to_coordinator" and memo == packet.memo:
+                        # if memo is not used it's None anyways, None == None
+                        data_packets.append(packet.data)
+            if len(data_packets) == self.num_clients:
+                # done gathering, reset for this memo
+                for client_id, packets in self._shared_dict.items():
+                    self._shared_dict[client_id] = [packet for packet in packets if not (packet.direction == "to_coordinator" and memo == packet.memo)]
+                return data_packets
             else:
-                self._shared_dict = {}
+                # not done gathering yet, return empty list
+                return []
 
-    def increment_times_accesed_global(self):
+    def broadcast_to_clients(self, data: Any, memo: Optional[str] = None):
+        with self._lock:
+            for client_id in self._shared_dict.keys():
+                self._shared_dict[client_id].append(
+                    FedLearnSimulationGatewayDataPacket(
+                        direction="to_clients",
+                        memo=memo,
+                        data=data))
+
+    def await_data(self, n: int, client_id: str, direction: str, memo: Optional[str]) -> Optional[Any]:
         """
-        Increments the value associated with the key 'times_accesed_global' in the shared dictionary.
+        More specialized than gather_data plus can also be called by clients plus ignores the
+        direction.
+        Finds n datapoints with memo x sent to this specific client.
         """
         with self._lock:
-            if 'times_accesed_global' in self._shared_dict:
-                self._shared_dict['times_accesed_global'] += 1
-            else:
-                raise ValueError("The key 'times_accesed_global' does not exist in the shared dictionary, but trying to increment it")
-            # cleanup 'global' if all clients have accessed it
-            if self._shared_dict['times_accesed_global'] == self.num_clients:
-                # remove the global data
-                del self._shared_dict['global']
-                del self._shared_dict['times_accesed_global']
+            data_packets = []
+            client_packets = self._shared_dict.get(client_id, [])
+            for packet in client_packets:
+                if packet.memo == memo and packet.direction == direction:
+                    data_packets.append(packet.data)
+            if len(data_packets) == n:
+                # done gathering, reset for this memo
+                self._shared_dict[client_id] = [packet for packet in client_packets if not (packet.memo == memo and packet.direction == direction)]
+                return data_packets
+            return None
 
-    def update_global(self, data):
-        """
-        Updates the value associated with the key 'global' in the shared dictionary.
-        """
-        with self._lock:
-            self._shared_dict['global'] = data
-            self._shared_dict['times_accesed_global'] = 0
-                # reset as this new data has not been accessed by any client yet
 
-    def set(self, key, value):
-        """
-        Sets the value associated with the given key in the shared dictionary.
-        """
-        with self._lock:
-            self._shared_dict[key] = value
-
-    def delete(self, key):
-        """
-        Removes the key-value pair from the shared dictionary.
-        """
-        with self._lock:
-            if key in self._shared_dict:
-                del self._shared_dict[key]
-
+### Client class
 class LocalFedLearningSimulator(ProtocolFedLearning):
     """
     The simulator class, representing a single client in a federated learning environment.
@@ -104,7 +105,7 @@ class LocalFedLearningSimulator(ProtocolFedLearning):
                  num_clients: int,
                  inputfolder: str,
                  outputfolder: str,
-                 shared_dict: SharedDictionary):
+                 gateway: FedLearnSimulationGateway):
         """
         The constructor, the following parameters are required:
 
@@ -117,9 +118,7 @@ class LocalFedLearningSimulator(ProtocolFedLearning):
                 specifically to know how many data packets to wait for
             inputfolder: The path to the input folder containing the data for this client
             outputfolder: The path to the output folder to store the results
-            shared_dict: A shared dictionary to store the data.
-                The other clients (instances of this class) receive the same
-                dictionary. The client uses it's client_id as key to access the data.
+            gateway: The federated learning gateway instance to facilitate communication.
         """
         self.coordinator = is_coordinator
         self.client_id = client_id
@@ -128,8 +127,9 @@ class LocalFedLearningSimulator(ProtocolFedLearning):
         self.num_clients = num_clients
         self.inputfolder = inputfolder
         self.outputfolder = outputfolder
-        self.shared_dict = shared_dict
+        self.gateway = gateway
         self.previously_awaited_data = None
+        self.round_counter = 0
 
     @property
     def is_coordinator(self):
@@ -146,14 +146,7 @@ class LocalFedLearningSimulator(ProtocolFedLearning):
                                  use_dp=False,
                                  memo=None):
         print(f"Client {self.client_id} sending data to coordinator")
-        while True:
-            # we can only send if what we send before was gather already
-            # the gathering deletes the data from the shared dictionary
-            # we therefore only need to make sure that get returns None
-            if self.shared_dict.get(self.client_id) is None:
-                self.shared_dict.set(self.client_id, data)
-                break
-            time.sleep(WAITING_TIME)
+        self.gateway.send_to_coordinator(client_id=str(self.client_id), data=data, memo=memo)
 
     def gather_data(self,
                     is_json: bool=False,
@@ -164,11 +157,8 @@ class LocalFedLearningSimulator(ProtocolFedLearning):
             raise ValueError("Only the coordinator can gather data")
         # wait for enough data to arrive in a loop
         while True:
-            data_packets = self.shared_dict.get_all_non_global_values()
-            print(f"gathering data, got {len(data_packets)} of {self.num_clients} data packets")
+            data_packets = self.gateway.gather_data_for_coordinator(memo=memo)
             if len(data_packets) == self.num_clients:
-                # reset the shared dictionary
-                self.shared_dict.delete_all_but_global()
                 return data_packets
             time.sleep(WAITING_TIME)
 
@@ -180,13 +170,7 @@ class LocalFedLearningSimulator(ProtocolFedLearning):
         if not self.coordinator:
             raise ValueError("Only the coordinator can broadcast data")
         print(f"Broadcasting data to all clients")
-        while True:
-            if not self.shared_dict.get('times_accesed_global'):
-                # only happens after all clients have accessed the global data
-                # or at the start when no client has accessed the global data
-                self.shared_dict.update_global(data)
-                break
-            time.sleep(WAITING_TIME)
+        self.gateway.broadcast_to_clients(data=data, memo=memo)
 
     def await_data(self,
                      n: int = 1,
@@ -195,25 +179,21 @@ class LocalFedLearningSimulator(ProtocolFedLearning):
                      use_dp: bool = False,
                      use_smpc: bool = False,
                      memo: Optional[Any] = None):
-
-        if n != 1:
-            raise ValueError("This method only supports n=1 right now")
+        """
+        Wait for n data packets. Could be called by clients or the coordinator.
+        """
         while True:
-            data = self.shared_dict.get('global')
-
-            if data is not None and data != self.previously_awaited_data:
-                # data is not None -> some data was broadcasted
-                # data != self.previously_awaited_data -> if this is true other clients have not yet
-                # accessed the data. We need to wait until all clients have accessed the data
-                print(f"Client {self.client_id} received data, incrementing times_accesed_global")
-                self.shared_dict.increment_times_accesed_global()
-                self.previously_awaited_data = data
-                break
+            direction = "to_clients" if n==1 else "to_coordinator"
+                # we just assume that any single package waiting is from a send to a client
+                # while any more packages should only ever be send to the coordinator (aggregator)
+            data = self.gateway.await_data(n=n, client_id=str(self.client_id), direction=direction, memo=memo)
+            if data is not None:
+                if unwrap and len(data) == 1:
+                    return data[0]
+                return data
             time.sleep(WAITING_TIME)
 
-        # unwrap is not needed as we never wrap the data in the first place
-        return data
-
+### Wrapper class
 class LocalFedLearningSimulationWrapper:
     """
     A wrapper class to simulate a federated learning environment locally.
@@ -241,7 +221,7 @@ class LocalFedLearningSimulationWrapper:
             raise ValueError("The number of client folders and output folders must be the same")
         # basic variables
         self.num_clients = len(clientfolders)
-        self.shared_dict = SharedDictionary(num_clients=self.num_clients)
+        self.shared_dict = FedLearnSimulationGateway(num_clients=self.num_clients)
         self.created_files = []
 
         # copy files from the generic folder to each client folder
@@ -275,7 +255,7 @@ class LocalFedLearningSimulationWrapper:
                                                num_clients=self.num_clients,
                                                inputfolder=clientfolder,
                                                outputfolder=outputfolders[i],
-                                               shared_dict=self.shared_dict)
+                                               gateway=self.shared_dict)
             self.clients.append(client)
 
     def cleanup_created_files(self):
