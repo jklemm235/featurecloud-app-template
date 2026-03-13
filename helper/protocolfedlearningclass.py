@@ -16,11 +16,16 @@ class ProtocolFedLearning(Protocol):
     The coordinator is also a client.
     """
     @property
-    def is_coordinator(self):
+    def is_coordinator(self) -> bool:
         """ Boolean variable, if True the this AppState instance represents the
         coordinator. False otherwise.
-
         """
+        ...
+
+    @property
+    def id(self) -> str:
+        """ Unique identifier of the client."""
+        ...
 
     def send_data_to_coordinator(self,
                                  data: Any,

@@ -135,6 +135,10 @@ class LocalFedLearningSimulator(ProtocolFedLearning):
     def is_coordinator(self):
         return self.coordinator
 
+    @property
+    def id(self):
+        return self.client_id
+
     def send_data_to_coordinator(self,
                                  data,
                                  send_to_self=True,
